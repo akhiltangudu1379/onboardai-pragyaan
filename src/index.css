@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    @apply text-neutral-700;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold text-neutral-900;
+    line-height: 1.2;
+  }
+
+  ::selection {
+    @apply bg-primary-200 text-primary-900;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-neutral-300 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-neutral-400;
+  }
+}
+
+@layer components {
+  .skeleton {
+    @apply bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 bg-[length:200%_100%] animate-shimmer;
+  }
+
+  .glass {
+    @apply bg-white/80 backdrop-blur-xl;
+  }
+
+  .card-hover {
+    @apply transition-all duration-200 ease-smooth hover:-translate-y-0.5 hover:shadow-lg hover:border-primary-200;
+  }
+
+  .btn-press {
+    @apply transition-all duration-150 active:scale-[0.97];
+  }
+
+  .nav-item {
+    @apply transition-all duration-200 ease-smooth;
+  }
+
+  .nav-item:hover {
+    @apply bg-primary-50 text-primary-700;
+  }
+
+  .nav-item:hover .nav-icon {
+    @apply -translate-x-0.5 scale-110;
+  }
+
+  .nav-item-active {
+    @apply bg-primary-50 text-primary-700;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, rgba(99, 102, 241, 0.04) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(99, 102, 241, 0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  .bg-gradient-mesh {
+    background-image:
+      radial-gradient(at 20% 20%, rgba(99, 102, 241, 0.08) 0px, transparent 50%),
+      radial-gradient(at 80% 0%, rgba(6, 182, 212, 0.06) 0px, transparent 50%),
+      radial-gradient(at 70% 80%, rgba(99, 102, 241, 0.05) 0px, transparent 50%);
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
