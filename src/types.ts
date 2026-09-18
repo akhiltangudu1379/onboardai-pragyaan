@@ -27,6 +27,7 @@ export interface AgentResponse {
   checklist: ChecklistItem[];
   workflow: WorkflowCard;
   sources: SourceCitation[];
+  mode?: 'ai' | 'demo';
 }
 
 export interface ChecklistItem {
@@ -53,6 +54,7 @@ export interface SourceCitation {
   title: string;
   type: string;
   description: string;
+  sectionContent?: string;
 }
 
 export interface ActivityEvent {

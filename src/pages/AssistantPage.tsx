@@ -15,6 +15,8 @@ import {
   Clock,
   Activity,
   AlertCircle,
+  X,
+  ExternalLink,
 } from 'lucide-react';
 
 interface AssistantPageProps {
@@ -50,6 +52,7 @@ export function AssistantPage({ activity, onActivityAdd, onToast, onTasksChanged
   const [completedSteps, setCompletedSteps] = useState<string[]>([]);
   const [hoveredActivity, setHoveredActivity] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedSource, setSelectedSource] = useState<SourceCitation | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -74,14 +77,11 @@ export function AssistantPage({ activity, onActivityAdd, onToast, onTasksChanged
     setActiveStepIndex(-1);
     setCompletedSteps([]);
 
-    // Animate processing steps while waiting for the agent
     let stepIdx = 0;
     let advanceTimer: ReturnType<typeof setTimeout> | null = null;
 
     const advanceStep = () => {
-      if (stepIdx >= processingSteps.length) {
-        return;
-      }
+      if (stepIdx >= processingSteps.length) return;
       const stepId = processingSteps[stepIdx].id;
       setActiveStepIndex(stepIdx);
       advanceTimer = setTimeout(() => {
@@ -96,10 +96,8 @@ export function AssistantPage({ activity, onActivityAdd, onToast, onTasksChanged
     try {
       const result: AgentResult = await callAgent(text);
 
-      // Clear any remaining step timers
       if (advanceTimer) clearTimeout(advanceTimer);
 
-      // Complete all processing steps
       setCompletedSteps(processingSteps.map((s) => s.id));
       setActiveStepIndex(-1);
 
@@ -114,7 +112,6 @@ export function AssistantPage({ activity, onActivityAdd, onToast, onTasksChanged
       setProcessing(false);
       setCompletedSteps([]);
 
-      // Add activity events from the agent response
       if (result.activity && result.activity.length > 0) {
         result.activity.forEach((act, i) => {
           setTimeout(() => {
@@ -132,20 +129,16 @@ export function AssistantPage({ activity, onActivityAdd, onToast, onTasksChanged
         });
       }
 
-      // If the agent updated a task, refresh the dashboard tasks
       if (result.taskUpdate) {
         onTasksChanged?.();
         onToast(`Task updated: ${result.taskUpdate.newStatus}`, 'success');
       }
 
-      // If an access request was created, show a toast
       if (result.accessRequest) {
-        onToast(`Access request created: ${result.accessRequest.requestId} (Demo / Simulated)`, 'success');
+        onToast(`Access request ${result.accessRequest.requestId} created — pending approval`, 'success');
       }
 
-      // Refresh activity from DB
       onActivityChanged?.();
-
       onToast('Response ready', 'success');
     } catch (err) {
       if (advanceTimer) clearTimeout(advanceTimer);
@@ -171,7 +164,6 @@ export function AssistantPage({ activity, onActivityAdd, onToast, onTasksChanged
     <div className="flex flex-col lg:flex-row h-[calc(100vh-4rem)]">
       {/* Chat area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Chat messages */}
         <div className="flex-1 overflow-y-auto px-4 lg:px-6 py-6">
           <div className="max-w-2xl mx-auto">
             {messages.length === 0 && !processing && (
@@ -183,7 +175,7 @@ export function AssistantPage({ activity, onActivityAdd, onToast, onTasksChanged
                 {msg.role === 'user' ? (
                   <UserMessage message={msg} />
                 ) : (
-                  <AgentMessage message={msg} onToast={onToast} />
+                  <AgentMessage message={msg} onSelectSource={setSelectedSource} />
                 )}
               </div>
             ))}
@@ -245,6 +237,11 @@ export function AssistantPage({ activity, onActivityAdd, onToast, onTasksChanged
         hoveredActivity={hoveredActivity}
         onHover={setHoveredActivity}
       />
+
+      {/* Source preview modal */}
+      {selectedSource && (
+        <SourceModal source={selectedSource} onClose={() => setSelectedSource(null)} />
+      )}
     </div>
   );
 }
@@ -288,7 +285,7 @@ function UserMessage({ message }: { message: ChatMessage }) {
   );
 }
 
-function AgentMessage({ message, onToast }: { message: ChatMessage; onToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
+function AgentMessage({ message, onSelectSource }: { message: ChatMessage; onSelectSource: (s: SourceCitation) => void }) {
   const [visibleSections, setVisibleSections] = useState(0);
   const resp = message.response;
 
@@ -320,14 +317,23 @@ function AgentMessage({ message, onToast }: { message: ChatMessage; onToast: (ms
     <div className="flex gap-3 animate-fade-in-up">
       <AgentIcon size={36} state="ready" className="flex-shrink-0" />
       <div className="flex-1 min-w-0 space-y-3">
-        {/* Greeting */}
         {visibleSections >= 1 && (
           <div className="animate-fade-in-up">
-            <p className="text-sm font-medium text-neutral-900">{resp.greeting}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-neutral-900">{resp.greeting}</p>
+              {resp.mode && (
+                <span className={`text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${
+                  resp.mode === 'ai'
+                    ? 'text-success-700 bg-success-50 border-success-200'
+                    : 'text-neutral-500 bg-neutral-100 border-neutral-200'
+                }`}>
+                  {resp.mode === 'ai' ? 'AI' : 'Demo'}
+                </span>
+              )}
+            </div>
           </div>
         )}
 
-        {/* Summary */}
         {visibleSections >= 2 && (
           <div className="animate-fade-in-up">
             <div className="rounded-xl bg-neutral-50 border border-neutral-100 px-4 py-3">
@@ -336,7 +342,6 @@ function AgentMessage({ message, onToast }: { message: ChatMessage; onToast: (ms
           </div>
         )}
 
-        {/* Checklist */}
         {hasChecklist && visibleSections >= 3 && (
           <div className="animate-fade-in-up rounded-xl border border-neutral-200 bg-white p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-3">Requirements Checklist</p>
@@ -355,7 +360,6 @@ function AgentMessage({ message, onToast }: { message: ChatMessage; onToast: (ms
           </div>
         )}
 
-        {/* Workflow card */}
         {hasWorkflow && visibleSections >= 4 && (
           <div className="animate-fade-in-up rounded-xl border border-primary-200 bg-gradient-to-br from-primary-50/50 to-accent-50/30 p-4">
             <div className="flex items-center gap-2 mb-3">
@@ -384,13 +388,12 @@ function AgentMessage({ message, onToast }: { message: ChatMessage; onToast: (ms
           </div>
         )}
 
-        {/* Sources */}
         {hasSources && visibleSections >= 5 && (
           <div className="animate-fade-in-up">
             <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400 mb-2">Sources</p>
             <div className="space-y-1.5">
               {resp.sources.map((source) => (
-                <SourceCard key={source.id} source={source} onToast={onToast} />
+                <SourceCard key={source.id} source={source} onSelect={onSelectSource} />
               ))}
             </div>
           </div>
@@ -414,10 +417,10 @@ function WorkflowStepRow({ step }: { step: WorkflowStep }) {
   );
 }
 
-function SourceCard({ source, onToast }: { source: SourceCitation; onToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
+function SourceCard({ source, onSelect }: { source: SourceCitation; onSelect: (s: SourceCitation) => void }) {
   return (
     <button
-      onClick={() => onToast(`Opening: ${source.title}`, 'info')}
+      onClick={() => onSelect(source)}
       className="group w-full flex items-center gap-2.5 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-left transition-all duration-200 hover:border-primary-200 hover:bg-primary-50/40 hover:shadow-sm"
     >
       <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-neutral-100 text-neutral-500 transition-all duration-200 group-hover:bg-primary-100 group-hover:text-primary-600 flex-shrink-0">
@@ -429,6 +432,68 @@ function SourceCard({ source, onToast }: { source: SourceCitation; onToast: (msg
       </div>
       <ArrowRight size={13} className="text-neutral-300 group-hover:text-primary-500 transition-all duration-200 group-hover:translate-x-0.5 flex-shrink-0" />
     </button>
+  );
+}
+
+function SourceModal({ source, onClose }: { source: SourceCitation; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-neutral-200 animate-fade-in-up overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        style={{ animationDuration: '200ms' }}
+      >
+        {/* Header */}
+        <div className="flex items-start gap-3 px-5 py-4 border-b border-neutral-100">
+          <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary-50 text-primary-600 flex-shrink-0">
+            <BookOpen size={18} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold text-neutral-900 truncate">{source.title}</h3>
+            <p className="text-[11px] text-neutral-500 mt-0.5">{source.description}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-neutral-100 text-neutral-400 hover:text-neutral-700 transition-colors flex-shrink-0"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="px-5 py-4 max-h-80 overflow-y-auto">
+          {source.sectionContent ? (
+            <div className="rounded-xl bg-neutral-50 border border-neutral-100 px-4 py-3">
+              <p className="text-sm text-neutral-700 leading-relaxed whitespace-pre-line">{source.sectionContent}</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <ExternalLink size={24} className="text-neutral-300 mb-2" />
+              <p className="text-sm text-neutral-500">No preview available for this source.</p>
+              <p className="text-[11px] text-neutral-400 mt-1">Contact your admin to view the full document.</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-neutral-100 flex items-center justify-between">
+          <span className="text-[11px] text-neutral-400">{source.type}</span>
+          <button
+            onClick={onClose}
+            className="text-xs font-medium text-primary-600 hover:text-primary-700 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -450,9 +515,6 @@ function ProcessingState({ activeStepIndex, completedSteps }: { activeStepIndex:
                 className={`flex items-center gap-2.5 transition-all duration-300 ${
                   isPending ? 'opacity-40' : 'opacity-100'
                 }`}
-                style={{
-                  transform: isPending ? 'translateY(0)' : 'translateY(0)',
-                }}
               >
                 <div
                   className={`flex items-center justify-center w-6 h-6 rounded-full flex-shrink-0 transition-all duration-300 ${
@@ -537,7 +599,6 @@ function ActivityPanel({
                     {event.timestamp}
                   </p>
 
-                  {/* Hover reveal detail */}
                   {isHovered && event.detail && (
                     <div className="mt-2 pt-2 border-t border-neutral-100 animate-fade-in-up" style={{ animationDuration: '150ms' }}>
                       <p className="text-[10px] font-medium text-neutral-600">{event.tool}</p>

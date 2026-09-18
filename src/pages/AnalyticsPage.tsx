@@ -2,9 +2,62 @@ import { useState, useEffect } from 'react';
 import { Reveal } from '@/components/Reveal';
 import { CountUp } from '@/components/CountUp';
 import { analyticsData } from '@/data';
+import { supabase } from '@/lib/supabase';
+import { DEMO_USER_ID } from '@/lib/supabase';
 import { TrendingUp, TrendingDown, Sparkles } from 'lucide-react';
 
+type DonutItem = { label: string; value: number; color: string };
+
 export function AnalyticsPage() {
+  const [taskBreakdown, setTaskBreakdown] = useState<DonutItem[]>(analyticsData.taskBreakdown);
+  const [insights, setInsights] = useState(analyticsData.insights);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadRealData() {
+      try {
+        const [tasksRes, activityRes, requestsRes] = await Promise.all([
+          supabase.from('onboarding_tasks').select('status').eq('user_id', DEMO_USER_ID),
+          supabase.from('agent_activity').select('id', { count: 'exact', head: true }).eq('user_id', DEMO_USER_ID),
+          supabase.from('access_requests').select('id', { count: 'exact', head: true }).eq('user_id', DEMO_USER_ID),
+        ]);
+
+        const tasks = tasksRes.data || [];
+        if (tasks.length > 0) {
+          const completed = tasks.filter((t) => t.status === 'completed').length;
+          const inProgress = tasks.filter((t) => t.status === 'in-progress').length;
+          const pending = tasks.filter((t) => t.status === 'pending').length;
+          const notStarted = tasks.filter((t) => t.status === 'not-started').length;
+          const total = tasks.length;
+          const completionPct = Math.round((completed / total) * 100);
+
+          setTaskBreakdown([
+            { label: 'Completed', value: completed, color: 'success' },
+            { label: 'In Progress', value: inProgress, color: 'primary' },
+            { label: 'Pending', value: pending, color: 'warning' },
+            { label: 'Not Started', value: notStarted, color: 'neutral' },
+          ].filter((d) => d.value > 0));
+
+          const agentInteractions = activityRes.count ?? 0;
+          const accessRequests = requestsRes.count ?? 0;
+
+          setInsights([
+            { label: 'Completion Rate', value: `${completionPct}%`, trend: `${completed}/${total} tasks`, trendUp: completionPct >= 50 },
+            { label: 'Tasks Completed', value: `${completed}`, trend: `${total - completed} remaining`, trendUp: completed > 0 },
+            { label: 'Agent Interactions', value: `${agentInteractions}`, trend: 'total sessions', trendUp: true },
+            { label: 'Access Requests', value: `${accessRequests}`, trend: 'submitted', trendUp: accessRequests > 0 },
+          ]);
+        }
+      } catch (err) {
+        console.error('Analytics data load error:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadRealData();
+  }, []);
+
   return (
     <div className="p-4 lg:p-6 max-w-5xl mx-auto">
       <Reveal>
@@ -16,11 +69,13 @@ export function AnalyticsPage() {
 
       {/* Insight cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        {analyticsData.insights.map((insight, i) => (
+        {insights.map((insight, i) => (
           <Reveal key={insight.label} delay={i * 80}>
             <div className="rounded-2xl border border-neutral-200 bg-white p-5 card-hover">
               <p className="text-xs text-neutral-500 mb-1">{insight.label}</p>
-              <p className="text-2xl font-bold text-neutral-900">{insight.value}</p>
+              <p className={`text-2xl font-bold text-neutral-900 ${loading ? 'animate-pulse opacity-50' : ''}`}>
+                {insight.value}
+              </p>
               <div className="flex items-center gap-1 mt-2">
                 {insight.trendUp ? (
                   <TrendingUp size={13} className="text-success-500" />
@@ -30,7 +85,6 @@ export function AnalyticsPage() {
                 <span className={`text-xs font-medium ${insight.trendUp ? 'text-success-600' : 'text-error-600'}`}>
                   {insight.trend}
                 </span>
-                <span className="text-[10px] text-neutral-400">vs last month</span>
               </div>
             </div>
           </Reveal>
@@ -39,7 +93,6 @@ export function AnalyticsPage() {
 
       {/* Charts */}
       <div className="grid lg:grid-cols-2 gap-4 mb-6">
-        {/* Line chart */}
         <Reveal>
           <div className="rounded-2xl border border-neutral-200 bg-white p-5">
             <h3 className="text-sm font-semibold text-neutral-900 mb-1">Onboarding Completion Rate</h3>
@@ -48,7 +101,6 @@ export function AnalyticsPage() {
           </div>
         </Reveal>
 
-        {/* Bar chart */}
         <Reveal delay={80}>
           <div className="rounded-2xl border border-neutral-200 bg-white p-5">
             <h3 className="text-sm font-semibold text-neutral-900 mb-1">Time Saved by AI Agent</h3>
@@ -64,11 +116,10 @@ export function AnalyticsPage() {
           <div className="rounded-2xl border border-neutral-200 bg-white p-5">
             <h3 className="text-sm font-semibold text-neutral-900 mb-1">Task Status Breakdown</h3>
             <p className="text-xs text-neutral-500 mb-4">Current onboarding cycle distribution</p>
-            <DonutChart data={analyticsData.taskBreakdown} />
+            <DonutChart data={taskBreakdown} />
           </div>
         </Reveal>
 
-        {/* AI insight */}
         <Reveal delay={80}>
           <div className="rounded-2xl border border-primary-200 bg-gradient-to-br from-primary-50 to-accent-50/30 p-5 h-full">
             <div className="flex items-center gap-2 mb-3">
@@ -126,7 +177,6 @@ function LineChart({ data }: { data: { week: string; value: number }[] }) {
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
-      {/* Grid lines */}
       {[0, 25, 50, 75, 100].map((v) => {
         const y = padding.top + chartH - ((v - min) / (max - min)) * chartH;
         return (
@@ -137,13 +187,7 @@ function LineChart({ data }: { data: { week: string; value: number }[] }) {
         );
       })}
 
-      {/* Area */}
-      <path
-        d={areaD}
-        fill="url(#lineGradient)"
-        opacity={animated ? 1 : 0}
-        style={{ transition: 'opacity 800ms ease-out' }}
-      />
+      <path d={areaD} fill="url(#lineGradient)" opacity={animated ? 1 : 0} style={{ transition: 'opacity 800ms ease-out' }} />
       <defs>
         <linearGradient id="lineGradient" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#6366f1" stopOpacity={0.15} />
@@ -151,29 +195,18 @@ function LineChart({ data }: { data: { week: string; value: number }[] }) {
         </linearGradient>
       </defs>
 
-      {/* Line */}
       <path
-        d={pathD}
-        fill="none"
-        stroke="#6366f1"
-        strokeWidth={2.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        style={{
-          strokeDasharray: 1000,
-          strokeDashoffset: animated ? 0 : 1000,
-          transition: 'stroke-dashoffset 1.2s cubic-bezier(0.16, 1, 0.3, 1)',
-        }}
+        d={pathD} fill="none" stroke="#6366f1" strokeWidth={2.5}
+        strokeLinecap="round" strokeLinejoin="round"
+        style={{ strokeDasharray: 1000, strokeDashoffset: animated ? 0 : 1000, transition: 'stroke-dashoffset 1.2s cubic-bezier(0.16, 1, 0.3, 1)' }}
       />
 
-      {/* Points */}
       {points.map((p, i) => (
         <g key={i} style={{ opacity: animated ? 1 : 0, transition: `opacity 300ms ease-out ${300 + i * 100}ms` }}>
           <circle cx={p.x} cy={p.y} r={3.5} fill="#6366f1" stroke="white" strokeWidth={2} />
         </g>
       ))}
 
-      {/* X labels */}
       {points.map((p, i) => (
         <text key={i} x={p.x} y={height - 6} textAnchor="middle" className="fill-neutral-400 text-[9px]">{p.week}</text>
       ))}
@@ -197,10 +230,7 @@ function BarChart({ data }: { data: { day: string; value: number }[] }) {
           <div className="flex-1 flex items-end w-full justify-center">
             <div
               className="w-full max-w-[32px] rounded-t-lg bg-gradient-to-t from-primary-500 to-accent-400 transition-all duration-700 ease-smooth relative group"
-              style={{
-                height: animated ? `${(d.value / max) * 100}%` : '0%',
-                transitionDelay: `${i * 80}ms`,
-              }}
+              style={{ height: animated ? `${(d.value / max) * 100}%` : '0%', transitionDelay: `${i * 80}ms` }}
             >
               <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-semibold text-neutral-600 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                 {d.value}h
@@ -214,7 +244,7 @@ function BarChart({ data }: { data: { day: string; value: number }[] }) {
   );
 }
 
-function DonutChart({ data }: { data: { label: string; value: number; color: string }[] }) {
+function DonutChart({ data }: { data: DonutItem[] }) {
   const [animated, setAnimated] = useState(false);
   const total = data.reduce((sum, d) => sum + d.value, 0);
   const radius = 60;
@@ -232,7 +262,11 @@ function DonutChart({ data }: { data: { label: string; value: number; color: str
   useEffect(() => {
     const timer = setTimeout(() => setAnimated(true), 100);
     return () => clearTimeout(timer);
-  }, []);
+  }, [data]);
+
+  if (total === 0) {
+    return <div className="text-sm text-neutral-400 text-center py-8">No task data available</div>;
+  }
 
   return (
     <div className="flex items-center gap-6">
@@ -246,13 +280,8 @@ function DonutChart({ data }: { data: { label: string; value: number; color: str
             offset += dash;
             return (
               <circle
-                key={i}
-                cx={75}
-                cy={75}
-                r={radius}
-                fill="none"
-                stroke={colorMap[d.color]}
-                strokeWidth={strokeWidth}
+                key={i} cx={75} cy={75} r={radius} fill="none"
+                stroke={colorMap[d.color]} strokeWidth={strokeWidth}
                 strokeDasharray={`${animated ? dash : 0} ${gap}`}
                 strokeDashoffset={-currentOffset}
                 style={{ transition: `stroke-dasharray 800ms cubic-bezier(0.16, 1, 0.3, 1) ${i * 100}ms` }}
