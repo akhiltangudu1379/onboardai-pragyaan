@@ -46,55 +46,121 @@ interface Plan {
 
 // ─── Config ───
 function getConfig() {
-  return {
-    llmApiKey: Deno.env.get("LLM_API_KEY") || "",
-    llmModel: Deno.env.get("LLM_MODEL") || "gpt-4o-mini",
-    embeddingModel: Deno.env.get("EMBEDDING_MODEL") || "text-embedding-ada-002",
-  };
+  const geminiApiKey = Deno.env.get("GEMINI_API_KEY") || "";
+  const geminiModel = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-flash";
+  const openaiApiKey = Deno.env.get("LLM_API_KEY") || "";
+  const openaiModel = Deno.env.get("LLM_MODEL") || "gpt-4o-mini";
+  const provider: "gemini" | "openai" | "none" = geminiApiKey ? "gemini" : openaiApiKey ? "openai" : "none";
+  return { geminiApiKey, geminiModel, openaiApiKey, openaiModel, provider, hasLLM: provider !== "none" };
 }
 
 function getSupabase() {
   return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 }
 
-// ─── LLM ───
-async function llmCall(
+// ─── Gemini LLM ───
+async function geminiLlmCall(
+  apiKey: string,
+  model: string,
   messages: { role: string; content: string }[],
   opts?: { maxTokens?: number; temperature?: number; jsonMode?: boolean }
 ): Promise<string | null> {
-  const { llmApiKey, llmModel } = getConfig();
-  if (!llmApiKey) return null;
+  try {
+    const systemMsg = messages.find((m) => m.role === "system");
+    const convMsgs = messages.filter((m) => m.role !== "system");
+
+    const body: Record<string, unknown> = {
+      contents: convMsgs.map((m) => ({
+        role: m.role === "user" ? "user" : "model",
+        parts: [{ text: m.content }],
+      })),
+      generationConfig: {
+        maxOutputTokens: opts?.maxTokens || 800,
+        temperature: opts?.temperature ?? 0.3,
+        ...(opts?.jsonMode ? { responseMimeType: "application/json" } : {}),
+      },
+    };
+    if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { console.error("Gemini LLM error:", res.status, await res.text()); return null; }
+    const data = await res.json();
+    const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    // Strip markdown code fences if present (Gemini sometimes wraps JSON)
+    return text.replace(/^```(?:json)?\n?|\n?```$/g, "").trim() || null;
+  } catch (e) { console.error("Gemini call failed:", e); return null; }
+}
+
+// ─── Gemini Embeddings (768 dims — matches vector(768) column) ───
+async function geminiEmbed(apiKey: string, text: string): Promise<number[] | null> {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "models/text-embedding-004",
+        content: { parts: [{ text: text.slice(0, 8000) }] },
+        taskType: "RETRIEVAL_QUERY",
+      }),
+    });
+    if (!res.ok) { console.error("Gemini embed error:", res.status); return null; }
+    const data = await res.json();
+    return (data.embedding?.values as number[]) || null;
+  } catch { return null; }
+}
+
+// ─── OpenAI LLM (backward compat) ───
+async function openaiLlmCall(
+  apiKey: string,
+  model: string,
+  messages: { role: string; content: string }[],
+  opts?: { maxTokens?: number; temperature?: number; jsonMode?: boolean }
+): Promise<string | null> {
   try {
     const body: Record<string, unknown> = {
-      model: llmModel, messages,
+      model, messages,
       max_tokens: opts?.maxTokens || 800,
       temperature: opts?.temperature ?? 0.3,
     };
     if (opts?.jsonMode) body.response_format = { type: "json_object" };
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${llmApiKey}` },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
       body: JSON.stringify(body),
     });
-    if (!res.ok) { console.error("LLM error:", res.status); return null; }
+    if (!res.ok) { console.error("OpenAI LLM error:", res.status); return null; }
     const data = await res.json();
     return data.choices?.[0]?.message?.content || null;
-  } catch (e) { console.error("LLM call failed:", e); return null; }
+  } catch (e) { console.error("OpenAI call failed:", e); return null; }
+}
+
+// ─── Unified LLM / Embed (Gemini preferred, OpenAI fallback) ───
+async function llmCall(
+  messages: { role: string; content: string }[],
+  opts?: { maxTokens?: number; temperature?: number; jsonMode?: boolean }
+): Promise<string | null> {
+  const { geminiApiKey, geminiModel, openaiApiKey, openaiModel, provider } = getConfig();
+  if (provider === "gemini") return geminiLlmCall(geminiApiKey, geminiModel, messages, opts);
+  if (provider === "openai") return openaiLlmCall(openaiApiKey, openaiModel, messages, opts);
+  return null;
 }
 
 async function embed(text: string): Promise<number[] | null> {
-  const { llmApiKey, embeddingModel } = getConfig();
-  if (!llmApiKey) return null;
-  try {
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${llmApiKey}` },
-      body: JSON.stringify({ input: text.slice(0, 8000), model: embeddingModel }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.data?.[0]?.embedding || null;
-  } catch { return null; }
+  const { geminiApiKey, openaiApiKey, provider } = getConfig();
+  if (provider === "gemini") return geminiEmbed(geminiApiKey, text);
+  // OpenAI ada-002 produces 1536 dims which no longer matches the DB (now 768)
+  // Keyword fallback is used when embeddings are unavailable
+  if (provider === "openai") {
+    console.warn("OpenAI embeddings produce 1536 dims; DB is vector(768). Skipping vector search, using keyword fallback.");
+    return null;
+  }
+  return null;
 }
 
 // ─── Tools ───
@@ -198,7 +264,6 @@ async function findContact(sb: ReturnType<typeof getSupabase>, issue: string) {
   return scored.length > 0 ? scored[0].contact : null;
 }
 
-// Returns existing access requests for the user, optionally filtered by resource keyword
 async function getRequestStatus(
   sb: ReturnType<typeof getSupabase>, userId: string, resource?: string
 ): Promise<AccessRequestRecord[]> {
@@ -208,14 +273,9 @@ async function getRequestStatus(
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(5);
-
-  if (resource) {
-    q = q.ilike("resource", `%${resource}%`);
-  }
-
+  if (resource) q = q.ilike("resource", `%${resource}%`);
   const { data } = await q;
   if (!data) return [];
-
   return (data as Record<string, unknown>[]).map((r) => ({
     requestId: r.request_id as string,
     approver: r.approver as string,
@@ -226,11 +286,9 @@ async function getRequestStatus(
   }));
 }
 
-// Returns existing pending request for resource if one exists; creates new one otherwise
 async function createAccessRequest(
   sb: ReturnType<typeof getSupabase>, resource: string, userId: string
 ): Promise<{ requestId: string; approver: string; approverRole: string; status: string; isDuplicate?: boolean } | null> {
-  // Duplicate guard: check for an existing pending request for this resource
   const { data: existing } = await sb
     .from("access_requests")
     .select("request_id, approver, approver_role, status")
@@ -286,12 +344,11 @@ Available tools:
 - createAccessRequest: Submit a NEW access request. ONLY use when the user EXPLICITLY says "request access for me", "submit a request", "create an access request", or "I need you to request access". NEVER use for status/approval questions.
 - updateTaskStatus: Update a task. Use only when explicitly confirming task completion.
 
-CRITICAL RULES — read carefully:
-- "What is my GitHub access request status?" → getRequestStatus (NOT createAccessRequest)
-- "Is my request approved?" → getRequestStatus (NOT createAccessRequest)
-- "Do I have GitHub access?" → getRequestStatus (NOT createAccessRequest)
-- "Request GitHub access for me" → createAccessRequest
-- "I need GitHub access" alone → getRequestStatus first; only use createAccessRequest if user says "request" or "submit"
+CRITICAL RULES:
+- "What is my GitHub access request status?" -> getRequestStatus (NOT createAccessRequest)
+- "Is my request approved?" -> getRequestStatus (NOT createAccessRequest)
+- "Do I have GitHub access?" -> getRequestStatus (NOT createAccessRequest)
+- "Request GitHub access for me" -> createAccessRequest
 - NEVER call createAccessRequest for any query containing "status", "approved", "pending", "granted", "my request", "check my"
 
 Return this exact JSON:
@@ -299,6 +356,7 @@ Return this exact JSON:
 
 Examples:
 "What security training do I need?" -> {"intent":"knowledge question","tools":["searchKnowledge"],"searchQuery":"security training requirements"}
+"What do I need to do to keep company data secure?" -> {"intent":"knowledge question","tools":["searchKnowledge"],"searchQuery":"data security policy compliance"}
 "What do I still need to complete?" -> {"intent":"onboarding status","tools":["getUserProfile","getOnboardingTasks"]}
 "What is my GitHub access request status?" -> {"intent":"request status check","tools":["getRequestStatus"],"accessResource":"GitHub"}
 "Is my request approved?" -> {"intent":"request status check","tools":["getRequestStatus"],"accessResource":"GitHub"}
@@ -317,30 +375,26 @@ async function orchestrate(query: string): Promise<Plan> {
     try { return JSON.parse(response) as Plan; } catch { /* fall through */ }
   }
 
-  // Keyword fallback — order matters: status checks must be tested BEFORE create checks
+  // Keyword fallback
   const q = query.toLowerCase();
 
-  // Status/check queries (must come first to prevent misrouting to createAccessRequest)
   const isStatusQuery =
-    q.includes("status") ||
-    q.includes("approved") ||
-    q.includes("approval") ||
-    q.includes("granted") ||
-    (q.includes("my") && (q.includes("request") || q.includes("access")) && !q.includes("request access for") && !q.includes("request github") && !q.includes("get me access") && !q.includes("give me access"));
+    q.includes("status") || q.includes("approved") || q.includes("approval") || q.includes("granted") ||
+    (q.includes("my") && (q.includes("request") || q.includes("access")) &&
+      !q.includes("request access for") && !q.includes("request github") && !q.includes("get me access") && !q.includes("give me access"));
 
   if (isStatusQuery && (q.includes("github") || q.includes("access") || q.includes("request"))) {
     return { intent: "request_status_check", tools: ["getRequestStatus"], accessResource: "GitHub" };
   }
 
-  // Explicit create-request queries (only when user clearly asks to submit/create)
   const isExplicitCreate =
-    (q.includes("request access") || q.includes("request github") || q.includes("get me access") || q.includes("give me access") || q.includes("submit") || q.includes("create") || (q.includes("need") && q.includes("access") && !q.includes("status"))) &&
-    !isStatusQuery;
+    (q.includes("request access") || q.includes("request github") || q.includes("get me access") ||
+      q.includes("give me access") || q.includes("submit") ||
+      (q.includes("need") && q.includes("access") && !q.includes("status"))) && !isStatusQuery;
 
   if (isExplicitCreate) {
     return { intent: "access_request", tools: ["searchKnowledge", "getUserProfile", "findContact", "createAccessRequest"], searchQuery: "github access policy requirements", contactQuery: "github team lead approval", accessResource: "GitHub" };
   }
-
   if (q.includes("just joined") || q.includes("get everything") || q.includes("get started") || q.includes("new employee")) {
     return { intent: "multi_step_onboarding", tools: ["getUserProfile", "getOnboardingTasks", "searchKnowledge", "findContact"], searchQuery: "ML team onboarding guide getting started", contactQuery: "team lead onboarding" };
   }
@@ -374,13 +428,11 @@ async function generateResponse(
   }
   const contact = toolData.findContact as Record<string, unknown> | undefined;
   if (contact) ctxParts.push(`CONTACT: ${contact.name} (${contact.role}) - ${contact.email}, ${contact.phone}`);
-
   const reqStatuses = toolData.getRequestStatus as AccessRequestRecord[] | undefined;
   if (reqStatuses && reqStatuses.length > 0) {
     const lines = reqStatuses.map((r) => `Request ${r.requestId}: ${r.resource} — Status: ${r.status}, Approver: ${r.approver} (${r.approverRole})`).join("\n");
     ctxParts.push(`EXISTING ACCESS REQUESTS:\n${lines}`);
   }
-
   const req = toolData.createAccessRequest as { requestId: string; approver: string; approverRole: string; isDuplicate?: boolean } | null | undefined;
   if (req) {
     ctxParts.push(req.isDuplicate
@@ -411,7 +463,6 @@ function buildDemoResponse(plan: Plan, toolData: Record<string, unknown>): { gre
   const profile = toolData.getUserProfile as Record<string, unknown> | undefined;
   if (profile) greeting = `Here's the information for you, ${(profile.name as string).split(" ")[0]}:`;
 
-  // getRequestStatus result
   const reqStatuses = toolData.getRequestStatus as AccessRequestRecord[] | undefined;
   if (reqStatuses !== undefined) {
     if (reqStatuses.length > 0) {
@@ -444,9 +495,7 @@ function buildDemoResponse(plan: Plan, toolData: Record<string, unknown>): { gre
   }
 
   const contact = toolData.findContact as Record<string, unknown> | undefined;
-  if (contact) {
-    parts.push(`Contact:\n${contact.name} - ${contact.role}\nEmail: ${contact.email}\nPhone: ${contact.phone}`);
-  }
+  if (contact) parts.push(`Contact:\n${contact.name} - ${contact.role}\nEmail: ${contact.email}\nPhone: ${contact.phone}`);
 
   const req = toolData.createAccessRequest as { requestId: string; approver: string; approverRole: string; status: string; isDuplicate?: boolean } | null | undefined;
   if (req !== undefined) {
@@ -476,15 +525,16 @@ Deno.serve(async (req: Request) => {
     const { query, userId } = await req.json();
     const uid = userId || DEMO_USER_ID;
     const sb = getSupabase();
-    const { llmApiKey } = getConfig();
-    const mode: "ai" | "demo" = llmApiKey ? "ai" : "demo";
+    const { hasLLM, provider } = getConfig();
+    const mode: "ai" | "demo" = hasLLM ? "ai" : "demo";
+    const providerLabel = provider === "gemini" ? "Gemini AI" : provider === "openai" ? "OpenAI" : "demo";
 
     const activity: AgentEvent[] = [];
 
     activity.push({
       icon: "Sparkles", title: "Understanding request",
-      description: mode === "ai" ? "AI-powered intent classification" : "Analyzing request (demo mode - set LLM_API_KEY for full AI)",
-      status: "completed", tool: "Orchestrator", detail: `Mode: ${mode}`, event_type: "INTENT_DETECTED",
+      description: hasLLM ? `${providerLabel} intent classification` : "Analyzing request (demo mode — add GEMINI_API_KEY for AI)",
+      status: "completed", tool: "Orchestrator", detail: `Provider: ${providerLabel}`, event_type: "INTENT_DETECTED",
     });
     const plan = await orchestrate(query);
 
@@ -494,12 +544,16 @@ Deno.serve(async (req: Request) => {
 
     for (const tool of plan.tools) {
       if (tool === "searchKnowledge") {
+        const { provider: p } = getConfig();
+        const searchDesc = p === "gemini" ? "Semantic search (Gemini embeddings)" : p === "openai" ? "Semantic search (OpenAI embeddings)" : "Keyword search (demo mode)";
         activity.push({
           icon: "Search", title: "Searching organizational knowledge",
-          description: mode === "ai" ? "Semantic vector similarity search" : "Keyword search (demo mode)",
+          description: searchDesc,
           status: "completed", tool: "KnowledgeSearch", detail: plan.searchQuery || query, event_type: "KNOWLEDGE_SEARCH",
         });
         toolData.searchKnowledge = await searchKnowledge(sb, plan.searchQuery || query);
+        const kr = toolData.searchKnowledge as KnowledgeResult;
+        if (kr.usedVectorSearch) activity[activity.length - 1].detail = `Semantic match: ${kr.chunks.length} chunks`;
       }
       if (tool === "getUserProfile") {
         activity.push({ icon: "UserCheck", title: "Retrieving user profile", description: "Loading your profile and role", status: "completed", tool: "UserProfile", detail: `User: ${uid}`, event_type: "TOOL_EXECUTED" });
@@ -522,12 +576,9 @@ Deno.serve(async (req: Request) => {
         activity.push({ icon: "FileSearch", title: "Checking existing access requests", description: "Looking up your access request history", status: "completed", tool: "RequestLookup", detail: `Resource: ${plan.accessResource || "all"}`, event_type: "TOOL_EXECUTED" });
         const statuses = await getRequestStatus(sb, uid, plan.accessResource);
         toolData.getRequestStatus = statuses;
-        if (statuses.length > 0) {
-          const latest = statuses[0];
-          activity[activity.length - 1].detail = `Found ${statuses.length} request(s) — latest: ${latest.requestId} (${latest.status})`;
-        } else {
-          activity[activity.length - 1].detail = "No existing access requests found";
-        }
+        activity[activity.length - 1].detail = statuses.length > 0
+          ? `Found ${statuses.length} request(s) — latest: ${statuses[0].requestId} (${statuses[0].status})`
+          : "No existing access requests found";
       }
       if (tool === "createAccessRequest") {
         activity.push({ icon: "FileCheck2", title: "Processing access request", description: `Checking for existing ${plan.accessResource || "resource"} requests`, status: "completed", tool: "RequestCreator", detail: "Checking for duplicates before creating", event_type: "STATE_UPDATED" });
@@ -536,15 +587,15 @@ Deno.serve(async (req: Request) => {
         accessRequest = reqResult || undefined;
         if (reqResult) {
           if (reqResult.isDuplicate) {
-            activity[activity.length - 1].detail = `Existing request ${reqResult.requestId} found — no duplicate created`;
             activity[activity.length - 1].title = "Duplicate prevented";
             activity[activity.length - 1].description = `Request ${reqResult.requestId} already pending approval`;
+            activity[activity.length - 1].detail = `Existing request ${reqResult.requestId} found — no duplicate created`;
           } else {
             await updateTaskStatus(sb, "GitHub", uid, "in-progress");
             taskUpdated = true;
-            activity[activity.length - 1].detail = `Request ${reqResult.requestId} submitted to ${reqResult.approver}`;
             activity[activity.length - 1].title = "Access request created";
             activity[activity.length - 1].description = `${plan.accessResource || "GitHub"} access request submitted`;
+            activity[activity.length - 1].detail = `Request ${reqResult.requestId} submitted to ${reqResult.approver}`;
             await sb.from("agent_activity").insert({ user_id: uid, icon: "FileCheck2", title: `Created access request ${reqResult.requestId}`, description: `${plan.accessResource || "GitHub"} access pending approval from ${reqResult.approver}`, timestamp: "Just now", status: "completed", tool: "RequestCreator", detail: `Request ID: ${reqResult.requestId}`, event_type: "STATE_UPDATED" });
           }
         }
@@ -555,7 +606,6 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Human escalation check
     const kr = toolData.searchKnowledge as KnowledgeResult | undefined;
     const isKnowledgeOnlyQuery = plan.tools.includes("searchKnowledge") &&
       !plan.tools.includes("getOnboardingTasks") && !plan.tools.includes("createAccessRequest") && !plan.tools.includes("getRequestStatus");
@@ -580,7 +630,6 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Build structured response
     const tasks = (toolData.getOnboardingTasks as Record<string, unknown>[] | undefined) || [];
     const checklist = tasks.map((t, i) => ({ id: `c${i + 1}`, label: t.title as string, done: t.status === "completed" }));
 
@@ -591,7 +640,6 @@ Deno.serve(async (req: Request) => {
 
     const reqStatuses = toolData.getRequestStatus as AccessRequestRecord[] | undefined;
     if (reqStatuses && reqStatuses.length > 0) {
-      // Status lookup workflow
       const latest = reqStatuses[0];
       workflowTitle = "Access Request Status";
       workflowSteps = [
